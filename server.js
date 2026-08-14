@@ -1,42 +1,28 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
+require('dotenv').config();
+
+const Task = require('./models/tasks');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
-const filePath = path.join(__dirname, 'data/tasks.json');
-const logFile = path.join(__dirname, 'logs/server.log');
 
-// ---------- Helpers (file-backed storage) ----------
-const readTasks = () => {
-  const data = fs.readFileSync(filePath, 'utf8');
-  return JSON.parse(data);
-};
-
-const writeTasks = (tasks) => {
-  fs.writeFileSync(filePath, JSON.stringify(tasks, null, 2));
-};
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log('MongoDB connected successfully!'))
+  .catch((err) => console.error('MongoDB connection error:', err));
 
 app.use(express.json());
 
-// ==================== LOGGER MIDDLEWARE ====================
+
 app.use((req, res, next) => {
   const time = new Date().toISOString();
-  const log = `${time} | ${req.method} | ${req.originalUrl} | IP: ${req.ip}\n`;
-
-  console.log(log.trim());
-
-  fs.appendFile(logFile, log, (err) => {
-    if (err) console.error(err);
-  });
-
+  console.log(`${time} | ${req.method} | ${req.originalUrl} | IP: ${req.ip}`);
   next();
 });
-// ==================== END LOGGER MIDDLEWARE ====================
 
 
-// ==================== CONTENT-TYPE MIDDLEWARE ====================
 app.use((req, res, next) => {
   if (
     (req.method === 'POST' || req.method === 'PUT') &&
@@ -47,21 +33,15 @@ app.use((req, res, next) => {
       message: 'Content-Type must be application/json'
     });
   }
-
   next();
 });
-// ==================== END CONTENT-TYPE MIDDLEWARE ====================
 
 
-// Serve the frontend
-app.use(express.static(path.join(__dirname, 'public')));
-
-
-// ==================== GET /tasks ====================
-app.get('/tasks', (req, res, next) => {
+app.get('/tasks', async (req, res, next) => {
   try {
-    const tasks = readTasks();
-    res.json({
+    const tasks = await Task.find();
+    res.status(200).json({
+      success: true,
       count: tasks.length,
       data: tasks
     });
@@ -69,137 +49,131 @@ app.get('/tasks', (req, res, next) => {
     next(err);
   }
 });
-// ==================== END GET /tasks ====================
 
 
-// ==================== POST /tasks ====================
-app.post('/tasks', (req, res, next) => {
+app.get('/tasks/:id', async (req, res, next) => {
   try {
-    const { title, completed } = req.body;
-
-    if (!title || typeof title !== 'string' || title.trim() === '') {
+    // Catch malformed ObjectIds before hitting the DB
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Field "title" is required and must be a non-empty string.'
+        message: 'Invalid task ID format'
       });
     }
 
-    const tasks = readTasks();
+    const task = await Task.findById(req.params.id);
 
-    const newTask = {
-      id: tasks.length > 0 ? Math.max(...tasks.map(t => t.id)) + 1 : 1,
-      title: title.trim(),
-      completed: typeof completed === 'boolean' ? completed : false
-    };
+    if (!task) {
+      return res.status(404).json({
+        error: 'Not Found',
+        message: `Task with id ${req.params.id} not found.`
+      });
+    }
 
-    tasks.push(newTask);
-    writeTasks(tasks);
+    res.status(200).json({
+      success: true,
+      data: task
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/tasks', async (req, res, next) => {
+  try {
+    const { title, description, completed, priority } = req.body;
+
+    const task = await Task.create({ title, description, completed, priority });
 
     res.status(201).json({
       success: true,
       message: 'Task created successfully',
-      data: newTask
+      data: task
     });
   } catch (err) {
+    
+
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map((e) => e.message);
+      return res.status(400).json({
+        error: 'Validation Error',
+        messages: errors
+      });
+    }
     next(err);
   }
 });
-// ==================== END POST /tasks ====================
 
-
-// ==================== VALIDATE TASK ID (used by PUT/DELETE) ====================
-const validateTaskId = (req, res, next) => {
-  const id = Number(req.params.id);
-
-  if (isNaN(id)) {
-    return res.status(400).json({
-      error: 'Bad Request',
-      message: 'Invalid Task ID'
-    });
-  }
-
-  next();
-};
-// ==================== END VALIDATE TASK ID ====================
-
-
-// ==================== PUT /tasks/:id ====================
-app.put('/tasks/:id', validateTaskId, (req, res, next) => {
+app.put('/tasks/:id', async (req, res, next) => {
   try {
-    const { title, completed } = req.body;
-    const tasks = readTasks();
-    const taskIndex = tasks.findIndex(t => t.id === parseInt(req.params.id));
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Invalid task ID format'
+      });
+    }
 
-    if (taskIndex === -1) {
+    const { title, description, completed, priority } = req.body;
+
+    // runValidators ensures schema rules apply on update too
+    const task = await Task.findByIdAndUpdate(
+      req.params.id,
+      { title, description, completed, priority },
+      { new: true, runValidators: true }
+    );
+
+    if (!task) {
       return res.status(404).json({
         error: 'Not Found',
         message: `Task with id ${req.params.id} not found.`
       });
     }
-
-    if (title !== undefined) {
-      if (typeof title !== 'string' || title.trim() === '') {
-        return res.status(400).json({
-          error: 'Bad Request',
-          message: 'Field "title" must be a non-empty string.'
-        });
-      }
-      tasks[taskIndex].title = title.trim();
-    }
-
-    if (completed !== undefined) {
-      if (typeof completed !== 'boolean') {
-        return res.status(400).json({
-          error: 'Bad Request',
-          message: 'Field "completed" must be a boolean.'
-        });
-      }
-      tasks[taskIndex].completed = completed;
-    }
-
-    writeTasks(tasks);
 
     res.status(200).json({
       success: true,
       message: 'Task updated successfully',
-      data: tasks[taskIndex]
+      data: task
     });
   } catch (err) {
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map((e) => e.message);
+      return res.status(400).json({
+        error: 'Validation Error',
+        messages: errors
+      });
+    }
     next(err);
   }
 });
-// ==================== END PUT /tasks/:id ====================
 
-
-// ==================== DELETE /tasks/:id ====================
-app.delete('/tasks/:id', validateTaskId, (req, res, next) => {
+app.delete('/tasks/:id', async (req, res, next) => {
   try {
-    const tasks = readTasks();
-    const taskIndex = tasks.findIndex(t => t.id === parseInt(req.params.id));
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Invalid task ID format'
+      });
+    }
 
-    if (taskIndex === -1) {
+    const task = await Task.findByIdAndDelete(req.params.id);
+
+    if (!task) {
       return res.status(404).json({
         error: 'Not Found',
         message: `Task with id ${req.params.id} not found.`
       });
     }
 
-    const deleted = tasks.splice(taskIndex, 1)[0];
-    writeTasks(tasks);
-
     res.status(200).json({
       success: true,
       message: 'Task deleted successfully',
-      data: deleted
+      data: task
     });
   } catch (err) {
     next(err);
   }
 });
-// ==================== END DELETE /tasks/:id ====================
 
-
-// ==================== 404 HANDLER ====================
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -210,20 +184,11 @@ app.use((req, res) => {
     timestamp: new Date().toISOString()
   });
 });
-// ==================== END 404 HANDLER ====================
 
-
-// ==================== GLOBAL ERROR HANDLER (must stay last) ====================
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-
-  res.status(500).json({
-    success: false,
-    message: 'Something Went Wrong'
-  });
+  console.error(err.stack);   // <- full error goes HERE, not to Postman
+  res.status(500).json({ success: false, message: 'Something went wrong' });
 });
-// ==================== END GLOBAL ERROR HANDLER ====================
-
 
 app.listen(PORT, () => {
   console.log(`Listening on port ${PORT}`);

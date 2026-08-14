@@ -13,9 +13,19 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.2.1"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongoose": "^9.9.1"
   },
   "devDependencies": {
     "nodeman": "^1.1.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Krima027/task-manager-api-24AIML027.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Krima027/task-manager-api-24AIML027/issues"
+  },
+  "homepage": "https://github.com/Krima027/task-manager-api-24AIML027#readme"
 }
